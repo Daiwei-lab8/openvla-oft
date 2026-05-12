@@ -58,7 +58,7 @@ from prismatic.vla.constants import (
     NUM_ACTIONS_CHUNK,
     PROPRIO_DIM,
 )
-from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
+from prismatic.vla.datasets import AlignedVLADataset, RLDSBatchTransform, RLDSDataset
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 
 # Sane Defaults
@@ -71,8 +71,11 @@ class FinetuneConfig:
     vla_path: str = "openvla/openvla-7b"             # Path to OpenVLA model (on HuggingFace Hub or stored locally)
 
     # Dataset
-    data_root_dir: Path = Path("datasets/rlds")      # Directory containing RLDS datasets
-    dataset_name: str = "aloha_scoop_x_into_bowl"    # Name of fine-tuning dataset (e.g., `aloha_scoop_x_into_bowl`)
+    data_root_dir: Path = Path("datasets/rlds")      # RLDS root directory or aligned-dataset root directory
+    dataset_name: str = "aloha_scoop_x_into_bowl"    # Dataset name used for logging / dataset lookup
+    dataset_type: str = "rlds"                       # One of {"rlds", "aligned"}; use "aligned" for local aligned VLA datasets
+    val_split: float = 0.05                          # Validation split ratio for `dataset_type="aligned"`
+    dataset_seed: int = 7                            # Seed for aligned train/val episode splitting
     run_root_dir: Path = Path("runs")                # Path to directory to store logs & checkpoints
     shuffle_buffer_size: int = 100_000               # Dataloader shuffle buffer size (can reduce if OOM errors occur)
 
@@ -966,33 +969,67 @@ def finetune(cfg: FinetuneConfig) -> None:
     # We assume that the model takes as input one third-person camera image and 1 or 2 optional wrist camera image(s)
     use_wrist_image = cfg.num_images_in_input > 1
 
-    # Create training and optional validation datasets
-    batch_transform = RLDSBatchTransform(
-        action_tokenizer,
-        processor.tokenizer,
-        image_transform=processor.image_processor.apply_transform,
-        prompt_builder_fn=PurePromptBuilder,
-        use_wrist_image=use_wrist_image,
-        use_proprio=cfg.use_proprio,
-    )
-    train_dataset = RLDSDataset(
-        cfg.data_root_dir,
-        cfg.dataset_name,
-        batch_transform,
-        resize_resolution=tuple(vla.module.config.image_sizes),
-        shuffle_buffer_size=cfg.shuffle_buffer_size,
-        image_aug=cfg.image_aug,
-    )
-    if cfg.use_val_set:
-        val_dataset = RLDSDataset(
+    if cfg.dataset_type == "aligned":
+        if cfg.image_aug:
+            print("Warning: image_aug=True is currently ignored for dataset_type='aligned'.")
+
+        train_dataset = AlignedVLADataset(
+            cfg.data_root_dir,
+            cfg.dataset_name,
+            action_tokenizer,
+            processor.tokenizer,
+            image_transform=processor.image_processor.apply_transform,
+            prompt_builder_fn=PurePromptBuilder,
+            normalization_type=ACTION_PROPRIO_NORMALIZATION_TYPE,
+            use_wrist_image=use_wrist_image,
+            use_proprio=cfg.use_proprio,
+            train=True,
+            val_split=cfg.val_split,
+            seed=cfg.dataset_seed,
+        )
+        if cfg.use_val_set:
+            val_dataset = AlignedVLADataset(
+                cfg.data_root_dir,
+                cfg.dataset_name,
+                action_tokenizer,
+                processor.tokenizer,
+                image_transform=processor.image_processor.apply_transform,
+                prompt_builder_fn=PurePromptBuilder,
+                normalization_type=ACTION_PROPRIO_NORMALIZATION_TYPE,
+                use_wrist_image=use_wrist_image,
+                use_proprio=cfg.use_proprio,
+                train=False,
+                val_split=cfg.val_split,
+                seed=cfg.dataset_seed,
+                dataset_statistics=train_dataset.dataset_statistics,
+            )
+    else:
+        batch_transform = RLDSBatchTransform(
+            action_tokenizer,
+            processor.tokenizer,
+            image_transform=processor.image_processor.apply_transform,
+            prompt_builder_fn=PurePromptBuilder,
+            use_wrist_image=use_wrist_image,
+            use_proprio=cfg.use_proprio,
+        )
+        train_dataset = RLDSDataset(
             cfg.data_root_dir,
             cfg.dataset_name,
             batch_transform,
             resize_resolution=tuple(vla.module.config.image_sizes),
-            shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
+            shuffle_buffer_size=cfg.shuffle_buffer_size,
             image_aug=cfg.image_aug,
-            train=False,
         )
+        if cfg.use_val_set:
+            val_dataset = RLDSDataset(
+                cfg.data_root_dir,
+                cfg.dataset_name,
+                batch_transform,
+                resize_resolution=tuple(vla.module.config.image_sizes),
+                shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
+                image_aug=cfg.image_aug,
+                train=False,
+            )
 
     # [Important] Save dataset statistics so that we can unnormalize actions during inference
     if distributed_state.is_main_process:
@@ -1002,12 +1039,13 @@ def finetune(cfg: FinetuneConfig) -> None:
     collator = PaddedCollatorForActionPrediction(
         processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
     )
+    dataloader_num_workers = 0
     dataloader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
         sampler=None,
         collate_fn=collator,
-        num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
+        num_workers=dataloader_num_workers,
     )
     if cfg.use_val_set:
         val_batch_size = cfg.batch_size
@@ -1016,7 +1054,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             batch_size=val_batch_size,
             sampler=None,
             collate_fn=collator,
-            num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
+            num_workers=dataloader_num_workers,
         )
 
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
