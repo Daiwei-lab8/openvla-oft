@@ -931,4 +931,6 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "aloha1_scoop_X_into_bowl_45_demos": aloha_dataset_transform,
     "aloha1_put_X_into_pot_300_demos": aloha_dataset_transform,
     "franka_disassembly": aloha_dataset_transform,
+    "franka_disassembly_data1": aloha_dataset_transform,
+    "franka_disassembly_data2": aloha_dataset_transform,
 }

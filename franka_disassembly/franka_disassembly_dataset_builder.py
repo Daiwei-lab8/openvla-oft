@@ -195,3 +195,11 @@ class FrankaDisassembly(tfds.core.GeneratorBasedBuilder):
                 },
             }
             yield str(episode_dir), sample
+
+
+class FrankaDisassemblyData1(FrankaDisassembly):
+    """TFDS/RLDS builder for aligned_disassembly_data1."""
+
+
+class FrankaDisassemblyData2(FrankaDisassembly):
+    """TFDS/RLDS builder for aligned_disassembly_data2."""
