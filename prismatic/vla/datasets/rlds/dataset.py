@@ -15,6 +15,11 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
+try:
+    import franka_disassembly.franka_disassembly_dataset_builder  # noqa: F401
+except ModuleNotFoundError:
+    pass
+
 from prismatic.overwatch import initialize_overwatch
 from prismatic.vla.constants import ACTION_DIM, ACTION_PROPRIO_NORMALIZATION_TYPE, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX
 from prismatic.vla.datasets.rlds import obs_transforms, traj_transforms
